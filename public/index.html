@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bin Collection Days</title>
+  <style>
+    :root {
+      --bg: #f5f6f4;
+      --card: #ffffff;
+      --text: #1d2321;
+      --muted: #5f6b66;
+      --line: #dfe3e0;
+      --focus: #0b6e4f;
+      --bin-gar: #d64545;  /* general: red lid */
+      --bin-rec: #e9b908;  /* recycling: yellow lid */
+      --bin-gen: #5aa832;  /* green waste */
+      --bin-org: #8bc34a;  /* organics: lime lid */
+      --bin-blk: #7a7f7c;  /* skip */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 40px 16px; }
+    h1 { font-size: 1.75rem; margin: 0 0 4px; }
+    .lead { color: var(--muted); margin: 0 0 24px; }
+
+    /* ── search ── */
+    .search { position: relative; }
+    label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input[type="search"] {
+      width: 100%;
+      padding: 14px 16px;
+      font-size: 1rem;
+      border: 2px solid var(--line);
+      border-radius: 10px;
+      background: var(--card);
+      color: var(--text);
+    }
+    input[type="search"]:focus { outline: none; border-color: var(--focus); }
+    .hint { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+
+    .suggestions {
+      position: absolute; left: 0; right: 0; top: 100%;
+      margin: 4px 0 0; padding: 4px; list-style: none;
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.08);
+      max-height: 320px; overflow-y: auto; z-index: 10;
+    }
+    .suggestions[hidden] { display: none; }
+    .suggestions li { padding: 10px 12px; border-radius: 6px; cursor: pointer; }
+    .suggestions li[aria-selected="true"], .suggestions li:hover { background: #e8f3ee; }
+    .suggestions .empty { color: var(--muted); cursor: default; background: none !important; }
+
+    /* ── results ── */
+    .result { margin-top: 32px; }
+    .result[hidden] { display: none; }
+    .result h2 { font-size: 1.1rem; margin: 0 0 2px; }
+    .result .council { color: var(--muted); margin: 0 0 16px; font-size: .95rem; }
+
+    .bins { display: grid; gap: 12px; }
+    .bin {
+      display: grid; grid-template-columns: 44px 1fr auto; gap: 14px; align-items: center;
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+    }
+    .bin-icon { width: 44px; height: 52px; }
+    .bin-name { font-weight: 700; }
+    .bin-freq { font-size: .85rem; color: var(--muted); }
+    .bin-date { text-align: right; }
+    .bin-date strong { display: block; }
+    .bin-date span { font-size: .85rem; color: var(--muted); }
+    .badge {
+      display: inline-block; font-size: .75rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .03em; padding: 2px 8px; border-radius: 999px;
+      background: #0b6e4f; color: #fff; margin-bottom: 4px;
+    }
+    .status { margin-top: 24px; color: var(--muted); }
+    .status.error { color: #b42318; }
+
+    @media (max-width: 420px) {
+      .bin { grid-template-columns: 36px 1fr; }
+      .bin-date { grid-column: 2; text-align: left; }
+      .bin-icon { width: 36px; height: 42px; }
+    }
+  </style>
+</head>
+<body>
+  <!--
+    Config:
+      data-council = council slug (karratha, joondalup, ...)
+      data-api     = API base URL ("" = same domain)
+  -->
+  <main class="wrap" id="collections" data-council="karratha" data-api="">
+    <h1>Bin collection days</h1>
+    <p class="lead">Find out when your bins are collected.</p>
+
+    <div class="search">
+      <label for="address">Your address</label>
+      <input id="address" type="search" autocomplete="off" placeholder="e.g. 12 Sample Street"
+             role="combobox" aria-expanded="false" aria-controls="suggestions" aria-autocomplete="list" />
+      <p class="hint">Type at least 3 characters, then choose your address from the list.</p>
+      <ul class="suggestions" id="suggestions" role="listbox" hidden></ul>
+    </div>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <section class="result" id="result" hidden>
+      <h2 id="result-address"></h2>
+      <p class="council" id="result-council"></p>
+      <div class="bins" id="bins"></div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const root = document.getElementById('collections');
+      // allow ?council=joondalup in the URL for testing other councils
+      const council = new URLSearchParams(location.search).get('council') || root.dataset.council;
+      const api = root.dataset.api || '';
+
+      const input = document.getElementById('address');
+      const list = document.getElementById('suggestions');
+      const status = document.getElementById('status');
+      const result = document.getElementById('result');
+
+      const COLORS = { GAR: '--bin-gar', REC: '--bin-rec', GEN: '--bin-gen', ORG: '--bin-org', BLK: '--bin-blk' };
+
+      let items = [];
+      let active = -1;
+      let timer;
+      let lastQuery = '';
+      let controller;
+
+      const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+      function setStatus(text, isError) {
+        status.textContent = text || '';
+        status.classList.toggle('error', !!isError);
+      }
+
+      // ── autocomplete ──
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        const q = input.value.trim();
+        if (q.length < 3) return closeList();
+        timer = setTimeout(() => search(q), 250);
+      });
+
+      async function search(q) {
+        if (q === lastQuery) return;
+        lastQuery = q;
+        controller?.abort();
+        controller = new AbortController();
+        try {
+          const res = await fetch(`${api}/api/addresses?council=${encodeURIComponent(council)}&q=${encodeURIComponent(q)}`, { signal: controller.signal });
+          if (!res.ok) throw new Error(res.status);
+          const data = await res.json();
+          items = data.addresses || [];
+          renderList();
+        } catch (e) {
+          if (e.name !== 'AbortError') setStatus('Address search is unavailable right now. Please try again shortly.', true);
+        }
+      }
+
+      function renderList() {
+        active = -1;
+        list.innerHTML = items.length
+          ? items.map((a, i) => `<li role="option" id="opt-${i}" data-i="${i}" aria-selected="false">${escapeHtml(a.label)}</li>`).join('')
+          : '<li class="empty">No matching addresses. Check the spelling or try just the street name.</li>';
+        list.hidden = false;
+        input.setAttribute('aria-expanded', 'true');
+      }
+
+      function closeList() {
+        list.hidden = true;
+        list.innerHTML = '';
+        input.setAttribute('aria-expanded', 'false');
+        input.removeAttribute('aria-activedescendant');
+        items = [];
+        active = -1;
+        lastQuery = '';
+      }
+
+      function highlight(i) {
+        const opts = list.querySelectorAll('[role="option"]');
+        opts.forEach((o) => o.setAttribute('aria-selected', 'false'));
+        if (i >= 0 && opts[i]) {
+          opts[i].setAttribute('aria-selected', 'true');
+          opts[i].scrollIntoView({ block: 'nearest' });
+          input.setAttribute('aria-activedescendant', opts[i].id);
+        }
+        active = i;
+      }
+
+      input.addEventListener('keydown', (e) => {
+        if (list.hidden || !items.length) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); highlight(Math.min(active + 1, items.length - 1)); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(Math.max(active - 1, 0)); }
+        else if (e.key === 'Enter') { e.preventDefault(); choose(active >= 0 ? active : 0); }
+        else if (e.key === 'Escape') { closeList(); }
+      });
+
+      list.addEventListener('mousedown', (e) => {
+        const li = e.target.closest('[role="option"]');
+        if (li) { e.preventDefault(); choose(Number(li.dataset.i)); }
+      });
+
+      input.addEventListener('blur', () => setTimeout(closeList, 150));
+
+      function choose(i) {
+        const a = items[i];
+        if (!a) return;
+        input.value = a.label;
+        closeList();
+        loadCollections(a.id);
+        try { localStorage.setItem(`bins:${council}`, JSON.stringify(a)); } catch (_) {}
+      }
+
+      // ── collections ──
+      async function loadCollections(addressId) {
+        setStatus('Loading collection days…');
+        result.hidden = true;
+        try {
+          const res = await fetch(`${api}/api/collections?addressId=${addressId}`);
+          if (!res.ok) throw new Error(res.status);
+          renderCollections(await res.json());
+          setStatus('');
+        } catch (e) {
+          setStatus('We couldn\u2019t load collection days for that address. Please try again.', true);
+        }
+      }
+
+      // nextDate is already the council's local date (YYYY-MM-DD); format it as UTC so it never shifts
+      const longDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+      const shortDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+      function binIcon(type) {
+        const lid = `var(${COLORS[type] || '--bin-gar'})`;
+        return `<svg class="bin-icon" viewBox="0 0 44 52" aria-hidden="true">
+          <rect x="4" y="6" width="36" height="8" rx="2" fill="${lid}"/>
+          <path d="M7 14h30l-3 34a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3z" fill="#3b4440"/>
+          <rect x="17" y="2" width="10" height="5" rx="2" fill="${lid}"/>
+        </svg>`;
+      }
+
+      function renderCollections(data) {
+        document.getElementById('result-address').textContent = data.address.label;
+        document.getElementById('result-council').textContent = data.address.council;
+        const bins = document.getElementById('bins');
+
+        if (!data.collections.length) {
+          bins.innerHTML = '<p class="status">No collection schedule found for this address. Please contact your council.</p>';
+        } else {
+          bins.innerHTML = data.collections.map((c) => {
+            const badge = c.daysUntil === 0 ? '<span class="badge">Today</span>' : c.daysUntil === 1 ? '<span class="badge">Tomorrow</span>' : '';
+            return `<div class="bin">
+              ${binIcon(c.runType)}
+              <div>
+                <div class="bin-name">${escapeHtml(c.typeName)}</div>
+                <div class="bin-freq">Collected ${escapeHtml(c.frequency)}</div>
+              </div>
+              <div class="bin-date">
+                ${badge}
+                <strong>${longDate(c.nextDate)}</strong>
+                <span>then ${shortDate(c.followingDate)}</span>
+              </div>
+            </div>`;
+          }).join('');
+        }
+        result.hidden = false;
+      }
+
+      // remember the last address on this device
+      try {
+        const saved = JSON.parse(localStorage.getItem(`bins:${council}`) || 'null');
+        if (saved) { input.value = saved.label; loadCollections(saved.id); }
+      } catch (_) {}
+    })();
+  </script>
+</body>
+</html>
