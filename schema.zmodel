@@ -1,0 +1,167 @@
+// ZenStack schema for the waste collection calendar
+// Migrated from the WordPress plugin "cnaymun-collections"
+// (wp_cnaymun_councils, wp_cnaymun_addresses, wp_cnaymun_collection_schedules, wp_cnaymun_import_log)
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")          // Neon pooled connection string
+  directUrl = env("DATABASE_URL_UNPOOLED") // used by migrations
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+plugin enhancer {
+  provider = '@core/enhancer'
+}
+
+// ─────────────────────────────────────────────
+// Admin users (replaces WP admins and the "inventory_controller" role).
+// Members of the public don't log in; they only read addresses and schedules.
+// ─────────────────────────────────────────────
+enum Role {
+  ADMIN          // manages every council
+  COUNCIL_EDITOR // uploads data for a single council
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @email
+  password  String   @password @omit
+  role      Role     @default(COUNCIL_EDITOR)
+  councilId Int?     @map("council_id")
+  council   Council? @relation(fields: [councilId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // only admins manage users; users can read their own record
+  @@allow('all', auth().role == ADMIN)
+  @@allow('read', auth() == this)
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Council (was a WP multisite blog; now linked to a Sitecore site)
+// ─────────────────────────────────────────────
+model Council {
+  id             Int           @id @default(autoincrement())
+  name           String        @unique
+  slug           String        @unique // used in API calls, e.g. ?council=karratha
+  sitecoreSiteId String?       @unique @map("sitecore_site_id") // e.g. SXA site name
+  legacyWpSiteId Int?          @unique @map("legacy_wp_site_id")
+  addresses      Address[]
+  importLogs     ImportLog[]
+  users          User[]
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  @@allow('read', true)
+  @@allow('all', auth().role == ADMIN)
+
+  @@map("councils")
+}
+
+// ─────────────────────────────────────────────
+// Address (public, searchable by residents)
+// ─────────────────────────────────────────────
+model Address {
+  id           Int                  @id @default(autoincrement())
+  councilId    Int                  @map("council_id")
+  council      Council              @relation(fields: [councilId], references: [id], onDelete: Cascade)
+
+  // internal council reference; hidden from the public
+  customerId   String?              @map("customer_id") @length(max: 100) @deny('read', auth() == null)
+
+  streetNumber Int?                 @map("street_number")
+  unit         String?              @map("unit_string") @length(max: 50)
+  street       String?              @length(max: 100)
+  suburb       String?              @length(max: 45)
+  postcode     String?              @length(max: 10)
+
+  schedules    CollectionSchedule[]
+  createdAt    DateTime             @default(now()) @map("created")
+
+  // residents can search addresses without logging in
+  @@allow('read', true)
+
+  // admins manage everything; council editors only their own council
+  @@allow('create,update,delete', auth().role == ADMIN)
+  @@allow('create,update,delete', auth().role == COUNCIL_EDITOR && auth().councilId == councilId)
+
+  // enables upsert on re-import (Postgres allows multiple NULL customerIds)
+  @@unique([councilId, customerId])
+  @@index([councilId, suburb, street])
+
+  @@map("addresses")
+}
+
+// ─────────────────────────────────────────────
+// Collection schedule (one row per bin type per address)
+// ─────────────────────────────────────────────
+enum RunType {
+  BLK // Skip
+  GEN // Green
+  GAR // General
+  REC // Recycling
+  ORG // Organics
+}
+
+model CollectionSchedule {
+  id               Int      @id @default(autoincrement())
+  addressId        Int      @map("address_id")
+  address          Address  @relation(fields: [addressId], references: [id], onDelete: Cascade)
+
+  runType          RunType  @map("runtype")
+  dayOfWeek        Int      @default(1) @map("dayofweek") @gte(1) @lte(7)
+  weekly           Boolean  @default(false)  // false = fortnightly
+  weekStart        Int      @default(1) @map("weekstart") // which week of the fortnight the cycle starts
+
+  // raw values from the council file, kept for troubleshooting
+  originalRun      String?  @map("original_run") @length(max: 50)
+  originalSequence String?  @map("original_sequence") @length(max: 50)
+  originalSchedule String?  @map("original_schedule") @length(max: 50)
+
+  createdAt        DateTime @default(now()) @map("created")
+
+  @@allow('read', true)
+  @@allow('create,update,delete', auth().role == ADMIN)
+  @@allow('create,update,delete', auth().role == COUNCIL_EDITOR && auth().councilId == address.councilId)
+
+  @@index([addressId])
+  @@index([runType])
+
+  @@map("collection_schedules")
+}
+
+// ─────────────────────────────────────────────
+// Import log (admin only)
+// ─────────────────────────────────────────────
+enum ImportStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model ImportLog {
+  id                Int          @id @default(autoincrement())
+  councilId         Int          @map("council_id")
+  council           Council      @relation(fields: [councilId], references: [id], onDelete: Cascade)
+
+  filename          String?      @length(max: 100)
+  blobUrl           String?      @map("blob_url") // CSV stored in Vercel Blob
+  status            ImportStatus @default(PENDING)
+  addressesImported Int?         @map("addresses_imported")
+  addressErrors     Int?         @map("address_errors")
+  summary           String?      @length(max: 512)
+  startedAt         DateTime?    @map("started")
+  completedAt       DateTime?    @map("completed")
+
+  @@allow('all', auth().role == ADMIN)
+  @@allow('read,create', auth().role == COUNCIL_EDITOR && auth().councilId == councilId)
+
+  @@index([councilId, startedAt])
+
+  @@map("import_log")
+}
