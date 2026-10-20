@@ -13,7 +13,7 @@
 //     GET/POST/PATCH/DELETE /api/model/council, /api/model/address,
 //                           /api/model/collectionSchedule, /api/model/importLog
 
-import express, { Request, Response, NextFunction } from 'express';
+import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
@@ -60,19 +60,18 @@ declare global {
     }
 }
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || JWT_SECRET.length < 32) {
+const JWT_SECRET: string = process.env.JWT_SECRET ?? '';
+if (JWT_SECRET.length < 32) {
     throw new Error('JWT_SECRET must be set to a random string of at least 32 characters');
 }
-const TOKEN_TTL = process.env.JWT_TTL ?? '8h';
+// Token lifetime in seconds (default 8 hours)
+const TOKEN_TTL_SECONDS = Number(process.env.JWT_TTL_SECONDS ?? 8 * 60 * 60);
 
 // Compared against when the email doesn't exist, so response time doesn't reveal valid emails
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
 
-function signToken(user: AuthUser) {
-    return jwt.sign({ sub: String(user.id), role: user.role }, JWT_SECRET!, {
-        expiresIn: TOKEN_TTL as jwt.SignOptions['expiresIn'],
-    });
+function signToken(user: AuthUser): string {
+    return jwt.sign({ sub: String(user.id), role: user.role }, JWT_SECRET, { expiresIn: TOKEN_TTL_SECONDS });
 }
 
 const authenticate = async (req: Request, res: Response, next: NextFunction) => {
@@ -81,7 +80,7 @@ const authenticate = async (req: Request, res: Response, next: NextFunction) => 
     if (!token) return next();
 
     try {
-        const payload = jwt.verify(token, JWT_SECRET!) as jwt.JwtPayload;
+        const payload = jwt.verify(token, JWT_SECRET) as jwt.JwtPayload;
         // Load from the DB each time so role changes and deleted users take effect immediately
         const user = await prisma.user.findUnique({
             where: { id: Number(payload.sub) },
@@ -139,7 +138,7 @@ app.post('/api/auth/login', async (req, res, next) => {
 app.get('/api/auth/me', requireUser, (req, res) => res.json({ user: req.user }));
 
 // Policy-aware client for this request (anonymous when req.user is undefined)
-const db = (req: Request) => enhance(prisma, { user: req.user });
+const db = (req: Request) => enhance(prisma, req.user ? { user: req.user } : {});
 
 // ─────────────────────────────────────────────
 // Schedule helpers (ported from the WP plugin)

@@ -19,7 +19,9 @@ const DATA_DIR = path.join(__dirname, 'data');
 const BATCH_SIZE = 1000;
 
 // ─── Councils (same ids as WordPress so address.council_id still matches) ───
-const councilData: Prisma.CouncilCreateInput[] = [
+// "Unchecked" input allows setting explicit ids
+type CouncilSeed = Prisma.CouncilUncheckedCreateInput & { id: number; slug: string };
+const councilData: CouncilSeed[] = [
     { id: 1, name: 'Shire of Kalamunda', slug: 'kalamunda', legacyWpSiteId: 5 },
     { id: 2, name: 'City of Joondalup', slug: 'joondalup', legacyWpSiteId: 7 },
     { id: 4, name: 'City of Karratha', slug: 'karratha', legacyWpSiteId: 10 },
@@ -76,7 +78,7 @@ function readCsv(file: string, columns: string[]): Row[] {
     const firstLine = text.slice(0, text.indexOf('\n')).replace(/\r$/, '');
     const isTsv = firstLine.includes('\t');
     const delimiter = isTsv ? '\t' : ',';
-    const hasHeader = firstLine.split(delimiter)[0].replace(/"/g, '').trim().toLowerCase() === 'id';
+    const hasHeader = (firstLine.split(delimiter)[0] ?? '').replace(/"/g, '').trim().toLowerCase() === 'id';
 
     const rows: Row[] = parse(text, {
         delimiter,
@@ -91,8 +93,8 @@ function readCsv(file: string, columns: string[]): Row[] {
     // MySQL TSV escapes tabs/newlines/backslashes inside values
     if (isTsv) {
         for (const r of rows) {
-            for (const k of Object.keys(r)) {
-                if (r[k] !== '\\N') r[k] = r[k].replace(/\\t/g, '\t').replace(/\\n/g, ' ').replace(/\\\\/g, '\\');
+            for (const [k, v] of Object.entries(r)) {
+                if (typeof v === 'string' && v !== '\\N') r[k] = v.replace(/\\t/g, '\t').replace(/\\n/g, ' ').replace(/\\\\/g, '\\');
             }
         }
     }
