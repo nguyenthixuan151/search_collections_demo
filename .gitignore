@@ -6,3 +6,5 @@ node_modules/
 
 # WordPress exports: ~11k residential addresses with customer IDs, never commit
 prisma/data/
+.vercel
+.env*
