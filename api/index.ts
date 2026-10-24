@@ -224,6 +224,63 @@ function nextCollection(dayOfWeek: number, weekly: boolean, weekStart: number, f
 
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
 
+// Order waste types appear in within a month, and how many months of calendar to generate
+const RUN_TYPE_ORDER: RunType[] = ['GAR', 'REC', 'GEN', 'ORG', 'BLK'];
+const CALENDAR_MONTHS = 24;
+
+// All occurrences of a schedule between rangeStart and rangeEnd (inclusive, both UTC midnight)
+function occurrencesInRange(dayOfWeek: number, weekly: boolean, weekStart: number, rangeStart: Date, rangeEnd: Date): Date[] {
+    const dates: Date[] = [];
+    const step = (weekly ? 7 : 14) * DAY;
+    let d = nextCollection(dayOfWeek, weekly, weekStart, rangeStart);
+    while (d.getTime() <= rangeEnd.getTime()) {
+        dates.push(d);
+        d = new Date(d.getTime() + step);
+    }
+    return dates;
+}
+
+const monthKey = (year: number, month: number) => `${year}-${String(month).padStart(2, '0')}`;
+const monthLabel = (year: number, month: number) =>
+    new Intl.DateTimeFormat('en-AU', { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month - 1, 1)));
+
+type MonthSchedule = { runType: RunType; typeName: string; frequency: 'weekly' | 'fortnightly'; dates: string[] };
+type MonthCalendar = { year: number; month: number; label: string; collections: MonthSchedule[] };
+
+// Builds CALENDAR_MONTHS months of collection dates, starting from the month `from` falls in
+function buildCalendar(schedules: { runType: RunType; dayOfWeek: number; weekly: boolean; weekStart: number }[], from: Date): MonthCalendar[] {
+    const rangeStart = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), 1));
+    const rangeEnd = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + CALENDAR_MONTHS, 0));
+
+    const months = new Map<string, MonthCalendar>();
+    for (let i = 0; i < CALENDAR_MONTHS; i++) {
+        const d = new Date(Date.UTC(rangeStart.getUTCFullYear(), rangeStart.getUTCMonth() + i, 1));
+        const year = d.getUTCFullYear();
+        const month = d.getUTCMonth() + 1;
+        months.set(monthKey(year, month), { year, month, label: monthLabel(year, month), collections: [] });
+    }
+
+    for (const s of schedules) {
+        const frequency = s.weekly ? 'weekly' : 'fortnightly';
+        for (const d of occurrencesInRange(s.dayOfWeek, s.weekly, s.weekStart, rangeStart, rangeEnd)) {
+            const key = monthKey(d.getUTCFullYear(), d.getUTCMonth() + 1);
+            const monthData = months.get(key);
+            if (!monthData) continue; // shouldn't happen, but don't let a boundary date crash the request
+            let entry = monthData.collections.find((c) => c.runType === s.runType);
+            if (!entry) {
+                entry = { runType: s.runType, typeName: RUN_TYPE_NAMES[s.runType] ?? 'General', frequency, dates: [] };
+                monthData.collections.push(entry);
+            }
+            entry.dates.push(fmt(d));
+        }
+    }
+
+    return [...months.values()].map((m) => ({
+        ...m,
+        collections: m.collections.sort((a, b) => RUN_TYPE_ORDER.indexOf(a.runType) - RUN_TYPE_ORDER.indexOf(b.runType)),
+    }));
+}
+
 type AddressRow = { id: number; unit: string | null; streetNumber: number | null; street: string | null; suburb: string | null; postcode: string | null };
 const addressLabel = (a: AddressRow) =>
     [[a.unit, a.streetNumber].filter(Boolean).join('/'), a.street, a.suburb, a.postcode].filter(Boolean).join(' ');
@@ -303,10 +360,13 @@ app.get(
             })
             .sort((a, b) => a.nextDate.localeCompare(b.nextDate));
 
+        const months = buildCalendar(address.schedules, today);
+
         res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
         res.json({
             address: { id: address.id, label: addressLabel(address), council: address.council.name },
             collections,
+            months,
         });
     })
 );

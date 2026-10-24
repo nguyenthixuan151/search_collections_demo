@@ -17,6 +17,11 @@
       --bin-gen: #5aa832;  /* green waste */
       --bin-org: #8bc34a;  /* organics: lime lid */
       --bin-blk: #7a7f7c;  /* skip */
+      --cal-title: #4fa8d8;
+      --cal-navy: #1b3a57;
+      --cal-border: #1b6fb0;
+      --cal-card-top: #e2e2e2;
+      --cal-card-bottom: #f6f6f6;
     }
     * { box-sizing: border-box; }
     body {
@@ -57,35 +62,53 @@
     .suggestions li[aria-selected="true"], .suggestions li:hover { background: #e8f3ee; }
     .suggestions .empty { color: var(--muted); cursor: default; background: none !important; }
 
-    /* ── results ── */
-    .result { margin-top: 32px; }
-    .result[hidden] { display: none; }
-    .result h2 { font-size: 1.1rem; margin: 0 0 2px; }
-    .result .council { color: var(--muted); margin: 0 0 16px; font-size: .95rem; }
-
-    .bins { display: grid; gap: 12px; }
-    .bin {
-      display: grid; grid-template-columns: 44px 1fr auto; gap: 14px; align-items: center;
-      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
-    }
-    .bin-icon { width: 44px; height: 52px; }
-    .bin-name { font-weight: 700; }
-    .bin-freq { font-size: .85rem; color: var(--muted); }
-    .bin-date { text-align: right; }
-    .bin-date strong { display: block; }
-    .bin-date span { font-size: .85rem; color: var(--muted); }
-    .badge {
-      display: inline-block; font-size: .75rem; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .03em; padding: 2px 8px; border-radius: 999px;
-      background: #0b6e4f; color: #fff; margin-bottom: 4px;
-    }
     .status { margin-top: 24px; color: var(--muted); }
     .status.error { color: #b42318; }
 
+    /* ── calendar ── */
+    .calendar { margin-top: 40px; }
+    .calendar[hidden] { display: none; }
+    .calendar-title { font-size: 2rem; color: var(--cal-title); margin: 0 0 16px; font-weight: 600; }
+    .showing { font-size: 1.05rem; color: var(--cal-navy); margin: 0 0 28px; }
+    .showing strong { margin-right: 6px; }
+    .showing span { color: #667085; font-weight: 700; }
+
+    .month + .month { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
+    .month-header {
+      width: 100%; display: flex; align-items: center; justify-content: space-between;
+      background: none; border: 2px solid transparent; border-radius: 4px; padding: 6px 4px;
+      font: inherit; font-size: 1.4rem; font-weight: 700; color: var(--cal-navy);
+      cursor: pointer; text-align: left;
+    }
+    .month-header:focus-visible { border-color: var(--cal-border); outline: none; }
+    .month[data-expanded="true"] .month-header { border-bottom: 2px solid var(--cal-border); border-radius: 0; }
+    .chevron {
+      flex: none; width: 34px; height: 34px; border-radius: 50%; background: #eef1f4;
+      display: flex; align-items: center; justify-content: center; transition: transform .15s ease;
+    }
+    .month[data-expanded="true"] .chevron { transform: rotate(180deg); }
+
+    .month-body { padding-top: 20px; }
+    .month[data-expanded="false"] .month-body { display: none; }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 20px; }
+    .card { background: var(--cal-card-bottom); border-radius: 6px; overflow: hidden; }
+    .card-top { background: var(--cal-card-top); padding: 24px 16px; text-align: center; }
+    .icon-circle {
+      width: 64px; height: 64px; border-radius: 50%; margin: 0 auto 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .icon-circle svg { width: 30px; height: 30px; }
+    .card-top h3 { margin: 0 0 4px; font-size: 1.05rem; color: var(--cal-navy); }
+    .card-top .freq { margin: 0; color: #5a6672; font-size: .9rem; }
+    .dates { list-style: none; margin: 0; padding: 16px; display: grid; gap: 12px; }
+    .dates li { display: flex; align-items: center; gap: 10px; color: var(--cal-navy); }
+    .dates li::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #98a2b3; flex: none; }
+    .dates .date-icon { flex: none; width: 18px; height: 18px; color: #667085; }
+
     @media (max-width: 420px) {
-      .bin { grid-template-columns: 36px 1fr; }
-      .bin-date { grid-column: 2; text-align: left; }
-      .bin-icon { width: 36px; height: 42px; }
+      .calendar-title { font-size: 1.5rem; }
+      .month-header { font-size: 1.15rem; }
     }
   </style>
 </head>
@@ -109,10 +132,10 @@
 
     <p class="status" id="status" role="status" aria-live="polite"></p>
 
-    <section class="result" id="result" hidden>
-      <h2 id="result-address"></h2>
-      <p class="council" id="result-council"></p>
-      <div class="bins" id="bins"></div>
+    <section class="calendar" id="calendar" hidden>
+      <h2 class="calendar-title" id="calendar-title"></h2>
+      <p class="showing"><strong>Showing results for</strong><span id="calendar-address"></span></p>
+      <div id="months"></div>
     </section>
   </main>
 
@@ -126,7 +149,7 @@
       const input = document.getElementById('address');
       const list = document.getElementById('suggestions');
       const status = document.getElementById('status');
-      const result = document.getElementById('result');
+      const calendar = document.getElementById('calendar');
 
       const COLORS = { GAR: '--bin-gar', REC: '--bin-rec', GEN: '--bin-gen', ORG: '--bin-org', BLK: '--bin-blk' };
 
@@ -246,55 +269,86 @@
       // ── collections ──
       async function loadCollections(addressId) {
         setStatus('Loading collection days…');
-        result.hidden = true;
+        calendar.hidden = true;
         try {
           const res = await authedFetch(`${api}/api/collections?addressId=${addressId}`);
           if (!res.ok) throw new Error(res.status);
-          renderCollections(await res.json());
+          renderCalendar(await res.json());
           setStatus('');
         } catch (e) {
           setStatus('We couldn\u2019t load collection days for that address. Please try again.', true);
         }
       }
 
-      // nextDate is already the council's local date (YYYY-MM-DD); format it as UTC so it never shifts
-      const longDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-AU', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
-      const shortDate = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'UTC' });
-
-      function binIcon(type) {
-        const lid = `var(${COLORS[type] || '--bin-gar'})`;
-        return `<svg class="bin-icon" viewBox="0 0 44 52" aria-hidden="true">
-          <rect x="4" y="6" width="36" height="8" rx="2" fill="${lid}"/>
-          <path d="M7 14h30l-3 34a3 3 0 0 1-3 3H13a3 3 0 0 1-3-3z" fill="#3b4440"/>
-          <rect x="17" y="2" width="10" height="5" rx="2" fill="${lid}"/>
-        </svg>`;
+      // "2026-10-27" -> "Monday 27th" (date-only string, parsed as UTC so it never shifts)
+      function dayLabel(iso) {
+        const d = new Date(iso + 'T00:00:00Z');
+        const weekday = d.toLocaleDateString('en-AU', { weekday: 'long', timeZone: 'UTC' });
+        const day = d.getUTCDate();
+        const suffix = day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th';
+        return `${weekday} ${day}${suffix}`;
       }
 
-      function renderCollections(data) {
-        document.getElementById('result-address').textContent = data.address.label;
-        document.getElementById('result-council').textContent = data.address.council;
-        const bins = document.getElementById('bins');
+      function binIcon(type) {
+        const fill = `var(${COLORS[type] || '--bin-gar'})`;
+        return `<div class="icon-circle" style="background:${fill}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.6" aria-hidden="true">
+            <path d="M6 7h12l-1 13a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2z"/>
+            <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+            <path d="M4 7h16"/>
+          </svg>
+        </div>`;
+      }
 
-        if (!data.collections.length) {
-          bins.innerHTML = '<p class="status">No collection schedule found for this address. Please contact your council.</p>';
-        } else {
-          bins.innerHTML = data.collections.map((c) => {
-            const badge = c.daysUntil === 0 ? '<span class="badge">Today</span>' : c.daysUntil === 1 ? '<span class="badge">Tomorrow</span>' : '';
-            return `<div class="bin">
-              ${binIcon(c.runType)}
-              <div>
-                <div class="bin-name">${escapeHtml(c.typeName)}</div>
-                <div class="bin-freq">Collected ${escapeHtml(c.frequency)}</div>
+      const dateIcon = `<svg class="date-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>
+      </svg>`;
+
+      function monthHtml(m, expanded) {
+        const cards = m.collections.length
+          ? m.collections.map((c) => `
+            <div class="card">
+              <div class="card-top">
+                ${binIcon(c.runType)}
+                <h3>${escapeHtml(c.typeName)} Waste Collection</h3>
+                <p class="freq">Collection ${escapeHtml(c.frequency)}</p>
               </div>
-              <div class="bin-date">
-                ${badge}
-                <strong>${longDate(c.nextDate)}</strong>
-                <span>then ${shortDate(c.followingDate)}</span>
-              </div>
-            </div>`;
-          }).join('');
-        }
-        result.hidden = false;
+              <ul class="dates">
+                ${c.dates.map((d) => `<li>${dateIcon}${dayLabel(d)}</li>`).join('')}
+              </ul>
+            </div>`).join('')
+          : '<p class="status">No collections scheduled this month.</p>';
+
+        return `<div class="month" data-expanded="${expanded}">
+          <button type="button" class="month-header" aria-expanded="${expanded}">
+            <span>${escapeHtml(m.label)}</span>
+            <span class="chevron" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#344054" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+            </span>
+          </button>
+          <div class="month-body">
+            <div class="cards">${cards}</div>
+          </div>
+        </div>`;
+      }
+
+      function renderCalendar(data) {
+        document.getElementById('calendar-title').textContent = `${data.months[0]?.year ?? ''} Collection Calendar`;
+        document.getElementById('calendar-address').textContent = data.address.label;
+
+        const months = document.getElementById('months');
+        months.innerHTML = data.months.map((m, i) => monthHtml(m, i === 0)).join('');
+
+        months.querySelectorAll('.month-header').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const month = btn.closest('.month');
+            const expanded = month.dataset.expanded === 'true';
+            month.dataset.expanded = String(!expanded);
+            btn.setAttribute('aria-expanded', String(!expanded));
+          });
+        });
+
+        calendar.hidden = false;
       }
 
       // remember the last address on this device
