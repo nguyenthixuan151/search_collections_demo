@@ -210,8 +210,11 @@ function todayIn(timeZone: string): Date {
 const isoDay = (d: Date) => ((d.getUTCDay() + 6) % 7) + 1;
 
 function nextCollection(dayOfWeek: number, weekly: boolean, weekStart: number, from: Date): Date {
+    // Stored dayOfWeek is 0-indexed from Monday (0=Mon ... 4=Fri, as exported from the WP plugin);
+    // convert to ISO weekday (1=Mon ... 7=Sun) to match isoDay()
+    const isoTarget = dayOfWeek + 1;
     // next occurrence of the weekday, today included
-    let next = new Date(from.getTime() + (((dayOfWeek - isoDay(from)) + 7) % 7) * DAY);
+    let next = new Date(from.getTime() + (((isoTarget - isoDay(from)) + 7) % 7) * DAY);
     if (weekly) return next;
 
     // fortnightly: shift a week if this falls in the wrong week of the cycle
