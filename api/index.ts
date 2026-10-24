@@ -2,8 +2,9 @@
 // Express API for the collection calendar, deployable to Vercel as a single function.
 //
 //   Auth:
-//     POST /api/auth/login  { email, password } -> { token }
+//     POST /api/auth/login         { email, password } -> { token }
 //     GET  /api/auth/me
+//     POST /api/auth/widget-token  (no body; uses USER_NAME/PASSWORD env) -> { token }
 //
 //   Authenticated (Authorization: Bearer <token>), used by the Sitecore component:
 //     GET /api/addresses?council=karratha&q=174 eddystone   -> autocomplete
@@ -17,6 +18,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { timingSafeEqual } from 'node:crypto';
 import { PrismaClient, RunType } from '@prisma/client';
 import { enhance } from '@zenstackhq/runtime';
 import { ZenStackMiddleware } from '@zenstackhq/server/express';
@@ -69,6 +71,13 @@ const TOKEN_TTL_SECONDS = Number(process.env.JWT_TTL_SECONDS ?? 8 * 60 * 60);
 
 // Compared against when the email doesn't exist, so response time doesn't reveal valid emails
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
+
+// Constant-time comparison of two bcrypt hash strings (same length required for timingSafeEqual)
+function hashesMatch(a: string, b: string): boolean {
+    const bufA = Buffer.from(a);
+    const bufB = Buffer.from(b);
+    return bufA.length === bufB.length && timingSafeEqual(bufA, bufB);
+}
 
 function signToken(user: AuthUser): string {
     return jwt.sign({ sub: String(user.id), role: user.role }, JWT_SECRET, { expiresIn: TOKEN_TTL_SECONDS });
@@ -136,6 +145,28 @@ app.post('/api/auth/login', async (req, res, next) => {
 });
 
 app.get('/api/auth/me', requireUser, (req, res) => res.json({ user: req.user }));
+
+// POST /api/auth/widget-token
+// Issues a token for the public Sitecore widget using a service-account's credentials
+// (USER_NAME / PASSWORD), kept server-side, so the widget never handles a real password.
+// PASSWORD here is the user's already-hashed password (as stored in the DB), not plaintext,
+// so it's checked with a constant-time hash comparison instead of bcrypt.compare.
+app.post('/api/auth/widget-token', async (req, res, next) => {
+    try {
+        const email = (process.env.USER_NAME ?? '').trim().toLowerCase();
+        const passwordHash = process.env.PASSWORD ?? '';
+        if (!email || !passwordHash) return res.status(500).json({ error: 'Widget credentials are not configured' });
+
+        const found = await prisma.user.findUnique({ where: { email } });
+        const ok = found && hashesMatch(passwordHash, found.password);
+        if (!found || !ok) return res.status(500).json({ error: 'Widget credentials are invalid' });
+
+        const user: AuthUser = { id: found.id, email: found.email, role: found.role, councilId: found.councilId };
+        res.json({ token: signToken(user) });
+    } catch (e) {
+        next(e);
+    }
+});
 
 // Policy-aware client for this request (anonymous when req.user is undefined)
 const db = (req: Request) => enhance(prisma, req.user ? { user: req.user } : {});

@@ -6,7 +6,7 @@
     "postinstall": "zenstack generate",
     "vercel-build": "zenstack generate && tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "dev": "tsx api/index.ts"
+    "dev": "tsx --env-file=.env.local api/index.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

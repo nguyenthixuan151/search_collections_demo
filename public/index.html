@@ -143,6 +143,28 @@
         status.classList.toggle('error', !!isError);
       }
 
+      // ── auth ──
+      // The widget authenticates as a service account; the server mints the token from
+      // USER_NAME/PASSWORD env vars, so no credentials are ever sent to the browser.
+      let tokenPromise;
+      function getToken(fresh) {
+        if (fresh) tokenPromise = null;
+        if (!tokenPromise) {
+          tokenPromise = fetch(`${api}/api/auth/widget-token`, { method: 'POST' })
+            .then((res) => { if (!res.ok) throw new Error(res.status); return res.json(); })
+            .then((data) => data.token);
+        }
+        return tokenPromise;
+      }
+
+      // Fetch with the widget token attached; retries once with a fresh token on 401.
+      async function authedFetch(url, options, retried) {
+        const token = await getToken(!!retried);
+        const res = await fetch(url, { ...options, headers: { ...options?.headers, Authorization: `Bearer ${token}` } });
+        if (res.status === 401 && !retried) return authedFetch(url, options, true);
+        return res;
+      }
+
       // ── autocomplete ──
       input.addEventListener('input', () => {
         clearTimeout(timer);
@@ -157,7 +179,7 @@
         controller?.abort();
         controller = new AbortController();
         try {
-          const res = await fetch(`${api}/api/addresses?council=${encodeURIComponent(council)}&q=${encodeURIComponent(q)}`, { signal: controller.signal });
+          const res = await authedFetch(`${api}/api/addresses?council=${encodeURIComponent(council)}&q=${encodeURIComponent(q)}`, { signal: controller.signal });
           if (!res.ok) throw new Error(res.status);
           const data = await res.json();
           items = data.addresses || [];
@@ -226,7 +248,7 @@
         setStatus('Loading collection days…');
         result.hidden = true;
         try {
-          const res = await fetch(`${api}/api/collections?addressId=${addressId}`);
+          const res = await authedFetch(`${api}/api/collections?addressId=${addressId}`);
           if (!res.ok) throw new Error(res.status);
           renderCollections(await res.json());
           setStatus('');
